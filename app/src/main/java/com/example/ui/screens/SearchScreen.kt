@@ -60,6 +60,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -99,6 +101,8 @@ fun SearchScreen(
     val fetchedChannelVideos by viewModel.fetchedChannelVideos.collectAsState()
     val channelContentType by viewModel.channelContentType.collectAsState()
     val downloadProgressMap by viewModel.downloadProgressMap.collectAsState()
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
 
     LazyColumn(
         modifier = modifier
@@ -292,7 +296,11 @@ fun SearchScreen(
 
                 // Search/Fetch White Button
                 Button(
-                    onClick = { viewModel.searchVideo() },
+                    onClick = {
+                        focusManager.clearFocus()
+                        keyboardController?.hide()
+                        viewModel.searchVideo()
+                    },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = PureWhite,
                         contentColor = BlackBackground
@@ -465,7 +473,11 @@ fun SearchScreen(
 
                 // Search Channel White Button
                 Button(
-                    onClick = { viewModel.searchChannel() },
+                    onClick = {
+                        focusManager.clearFocus()
+                        keyboardController?.hide()
+                        viewModel.searchChannel()
+                    },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = PureWhite,
                         contentColor = BlackBackground

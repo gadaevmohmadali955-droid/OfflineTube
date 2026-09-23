@@ -7,6 +7,11 @@ import android.net.Uri
 import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.ViewGroup
+import android.webkit.WebChromeClient
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -30,6 +35,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Close
@@ -38,12 +44,14 @@ import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.OfflinePin
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.VolumeOff
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
@@ -56,7 +64,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -66,6 +73,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -85,6 +94,11 @@ import com.example.ui.theme.TextSecondary
 import kotlinx.coroutines.delay
 import java.io.File
 
+enum class VideoPlayerSource {
+    YOUTUBE_ONLINE,
+    OFFLINE_LOCAL
+}
+
 @Composable
 fun OfflineVideoPlayer(
     video: VideoEntity,
@@ -92,49 +106,43 @@ fun OfflineVideoPlayer(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    var isPlaying by remember { mutableStateOf(false) }
-    var playWhenReady by remember { mutableStateOf(true) }
-    var isPlayerPrepared by remember { mutableStateOf(false) }
-    var currentPositionMs by remember { mutableLongStateOf(0L) }
-    var durationMs by remember { mutableLongStateOf(1L) }
-    var isControlsVisible by remember { mutableStateOf(true) }
-    var isMuted by remember { mutableStateOf(false) }
-    var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
-    var isBuffering by remember { mutableStateOf(true) }
-    var hasError by remember { mutableStateOf(false) }
-    var hasTriedFallback by remember { mutableStateOf(false) }
-
-    // MediaPlayer reference
-    var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
-    var surfaceHolder by remember { mutableStateOf<SurfaceHolder?>(null) }
-
-    // Auto-hide controls
-    LaunchedEffect(isControlsVisible, isPlaying) {
-        if (isControlsVisible && isPlaying) {
-            delay(4000)
-            isControlsVisible = false
-        }
-    }
-
-    // Periodic time update
-    LaunchedEffect(isPlaying, isPlayerPrepared) {
-        while (isPlaying && isPlayerPrepared && !hasError) {
-            mediaPlayer?.let { player ->
-                try {
-                    if (player.isPlaying) {
-                        currentPositionMs = player.currentPosition.toLong()
-                        val dur = player.duration.toLong()
-                        if (dur > 0) durationMs = dur
-                    }
-                } catch (e: Exception) {
-                    Log.w("VideoPlayer", "Error getting position: ${e.message}")
-                }
-            }
-            delay(500)
-        }
-    }
-
     val activity = context as? Activity
+
+    // Check if real local file is available
+    val localFile = remember(video.localFilePath) {
+        video.localFilePath?.let { File(it) }?.takeIf { it.exists() && it.length() > 50_000 }
+    }
+
+    // Default to YouTube online player so user sees real content, or local if downloaded
+    var currentSource by remember {
+        mutableStateOf(VideoPlayerSource.YOUTUBE_ONLINE)
+    }
+
+    var isControlsVisible by remember { mutableStateOf(true) }
+    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    var isWebLoading by remember { mutableStateOf(true) }
+
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+
+    LaunchedEffect(Unit) {
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+    }
+
+    DisposableEffect(video.id) {
+        onDispose {
+            try {
+                webViewRef?.stopLoading()
+                webViewRef?.loadUrl("about:blank")
+                webViewRef?.destroy()
+            } catch (_: Exception) {}
+            webViewRef = null
+        }
+    }
+
+    // Configure transient swipe navigation bar so bottom phone buttons don't block video
+    // and swiping up restores them
     DisposableEffect(Unit) {
         val window = activity?.window
         if (window != null) {
@@ -152,500 +160,452 @@ fun OfflineVideoPlayer(
         }
     }
 
+    Dialog(
+        onDismissRequest = onClose,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false
+        )
+    ) {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .background(BlackBackground)
+        ) {
+            when (currentSource) {
+                VideoPlayerSource.YOUTUBE_ONLINE -> {
+                    // REAL YouTube Player (Videos and Shorts)
+                    AndroidView(
+                        modifier = Modifier.fillMaxSize(),
+                        factory = { ctx ->
+                            try {
+                                val jsCache = File(ctx.cacheDir, "WebView/Default/HTTP Cache/Code Cache/js")
+                                if (!jsCache.exists()) jsCache.mkdirs()
+                                val wasmCache = File(ctx.cacheDir, "WebView/Default/HTTP Cache/Code Cache/wasm")
+                                if (!wasmCache.exists()) wasmCache.mkdirs()
+                            } catch (_: Exception) {}
+
+                            WebView(ctx).apply {
+                                layoutParams = ViewGroup.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                                setBackgroundColor(android.graphics.Color.BLACK)
+                                setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
+                                settings.apply {
+                                    javaScriptEnabled = true
+                                    domStorageEnabled = true
+                                    mediaPlaybackRequiresUserGesture = false
+                                    loadWithOverviewMode = true
+                                    useWideViewPort = true
+                                    allowContentAccess = true
+                                    allowFileAccess = false
+                                    cacheMode = WebSettings.LOAD_DEFAULT
+                                    userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+                                }
+                                webChromeClient = object : WebChromeClient() {
+                                    override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                                        if (newProgress >= 70) {
+                                            isWebLoading = false
+                                        }
+                                    }
+                                }
+                                webViewClient = object : WebViewClient() {
+                                    override fun onPageFinished(view: WebView?, url: String?) {
+                                        isWebLoading = false
+                                    }
+                                }
+
+                                val embedUrl = if (video.isShort) {
+                                    "https://www.youtube.com/embed/${video.id}?autoplay=1&playsinline=1&controls=1&rel=0&loop=1&playlist=${video.id}"
+                                } else {
+                                    "https://www.youtube.com/embed/${video.id}?autoplay=1&playsinline=1&controls=1&rel=0"
+                                }
+
+                                loadUrl(embedUrl)
+                                webViewRef = this
+                            }
+                        },
+                        update = {
+                            // Ready
+                        }
+                    )
+
+                    if (isWebLoading) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                color = PureWhite,
+                                modifier = Modifier.size(50.dp)
+                            )
+                        }
+                    }
+                }
+
+                VideoPlayerSource.OFFLINE_LOCAL -> {
+                    // Local MP4 Player using MediaPlayer
+                    LocalOfflinePlayerView(
+                        video = video,
+                        localFile = localFile
+                    )
+                }
+            }
+
+            // Top Bar Overlay
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter),
+                color = Color.Black.copy(alpha = 0.75f)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Close button
+                    IconButton(
+                        onClick = {
+                            webViewRef?.destroy()
+                            onClose()
+                        },
+                        modifier = Modifier
+                            .size(42.dp)
+                            .background(DarkSurface, CircleShape)
+                            .testTag("close_player_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Закрыть",
+                            tint = PureWhite
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(10.dp))
+
+                    // Title & Channel
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = video.title,
+                            color = PureWhite,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (currentSource == VideoPlayerSource.YOUTUBE_ONLINE) Icons.Default.SmartDisplay else Icons.Default.OfflinePin,
+                                contentDescription = null,
+                                tint = if (currentSource == VideoPlayerSource.YOUTUBE_ONLINE) PureWhite else GreenSuccess,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (currentSource == VideoPlayerSource.YOUTUBE_ONLINE) "YouTube • ${video.channelName}" else "Офлайн-файл • ${video.channelName}",
+                                color = TextSecondary,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    // Open in YouTube app button
+                    IconButton(
+                        onClick = {
+                            try {
+                                val url = if (video.videoUrl.isNotEmpty()) video.videoUrl else "https://www.youtube.com/watch?v=${video.id}"
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                                context.startActivity(intent)
+                            } catch (e: Exception) {
+                                Log.w("VideoPlayer", "Cannot open YouTube app: ${e.message}")
+                            }
+                        },
+                        modifier = Modifier
+                            .size(42.dp)
+                            .background(DarkSurface, CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                            contentDescription = "Открыть в приложении YouTube",
+                            tint = PureWhite,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    // Reload button (in case connection was slow)
+                    if (currentSource == VideoPlayerSource.YOUTUBE_ONLINE) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        IconButton(
+                            onClick = {
+                                isWebLoading = true
+                                webViewRef?.reload()
+                            },
+                            modifier = Modifier
+                                .size(42.dp)
+                                .background(DarkSurface, CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Обновить",
+                                tint = PureWhite,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+
+                    // Switch to Offline Local if downloaded
+                    if (localFile != null) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        IconButton(
+                            onClick = {
+                                currentSource = if (currentSource == VideoPlayerSource.YOUTUBE_ONLINE) {
+                                    VideoPlayerSource.OFFLINE_LOCAL
+                                } else {
+                                    VideoPlayerSource.YOUTUBE_ONLINE
+                                }
+                            },
+                            modifier = Modifier
+                                .size(42.dp)
+                                .background(DarkSurface, CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = if (currentSource == VideoPlayerSource.YOUTUBE_ONLINE) Icons.Default.OfflinePin else Icons.Default.SmartDisplay,
+                                contentDescription = "Переключить источник",
+                                tint = if (currentSource == VideoPlayerSource.OFFLINE_LOCAL) GreenSuccess else PureWhite,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LocalOfflinePlayerView(
+    video: VideoEntity,
+    localFile: File?
+) {
+    val context = LocalContext.current
+    var isPlaying by remember { mutableStateOf(false) }
+    var isPlayerPrepared by remember { mutableStateOf(false) }
+    var currentPositionMs by remember { mutableLongStateOf(0L) }
+    var durationMs by remember { mutableLongStateOf(1L) }
+    var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    var surfaceHolder by remember { mutableStateOf<SurfaceHolder?>(null) }
+    var isBuffering by remember { mutableStateOf(true) }
+    var isMuted by remember { mutableStateOf(false) }
+
+    LaunchedEffect(isPlaying, isPlayerPrepared) {
+        while (isPlaying && isPlayerPrepared) {
+            mediaPlayer?.let { player ->
+                try {
+                    if (player.isPlaying) {
+                        currentPositionMs = player.currentPosition.toLong()
+                        val dur = player.duration.toLong()
+                        if (dur > 0) durationMs = dur
+                    }
+                } catch (e: Exception) {
+                    // Ignore
+                }
+            }
+            delay(500)
+        }
+    }
+
     DisposableEffect(video.id) {
         onDispose {
             isPlayerPrepared = false
             isPlaying = false
             mediaPlayer?.run {
                 try {
-                    setOnPreparedListener(null)
-                    setOnCompletionListener(null)
-                    setOnErrorListener(null)
                     reset()
                     release()
                 } catch (e: Exception) {
-                    Log.w("VideoPlayer", "Dispose error: ${e.message}")
+                    // Ignore
                 }
             }
             mediaPlayer = null
         }
     }
 
-    Dialog(
-        onDismissRequest = onClose,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Box(
-            modifier = modifier
-                .fillMaxSize()
-                .background(BlackBackground)
-                .clickable(
-                    indication = null,
-                    interactionSource = remember { MutableInteractionSource() }
-                ) {
-                    isControlsVisible = !isControlsVisible
-                }
-        ) {
-            // Android SurfaceView for hardware video decoding
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
-                    SurfaceView(ctx).apply {
-                        holder.addCallback(object : SurfaceHolder.Callback {
-                            override fun surfaceCreated(holder: SurfaceHolder) {
-                                surfaceHolder = holder
-                                mediaPlayer?.let { oldPlayer ->
-                                    try {
-                                        oldPlayer.reset()
-                                        oldPlayer.release()
-                                    } catch (e: Exception) {
-                                        // Ignore
-                                    }
-                                }
-
+    Box(modifier = Modifier.fillMaxSize()) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                SurfaceView(ctx).apply {
+                    holder.addCallback(object : SurfaceHolder.Callback {
+                        override fun surfaceCreated(holder: SurfaceHolder) {
+                            surfaceHolder = holder
+                            mediaPlayer?.let { old ->
                                 try {
-                                    val player = MediaPlayer().apply {
-                                        setDisplay(holder)
-                                        setOnPreparedListener { mp ->
-                                            isPlayerPrepared = true
-                                            isBuffering = false
-                                            hasError = false
-                                            val dur = mp.duration.toLong()
-                                            if (dur > 0) durationMs = dur
-                                            if (playWhenReady) {
-                                                try {
-                                                    mp.start()
-                                                    isPlaying = true
-                                                } catch (e: Exception) {
-                                                    Log.e("VideoPlayer", "Start on prepared failed: ${e.message}")
-                                                }
-                                            }
-                                        }
-                                        setOnCompletionListener {
-                                            isPlaying = false
-                                            currentPositionMs = durationMs
-                                            isControlsVisible = true
-                                        }
-                                        setOnErrorListener { mp, what, extra ->
-                                            Log.w("VideoPlayer", "MediaPlayer onError: what=$what, extra=$extra")
-                                            isPlayerPrepared = false
-                                            isPlaying = false
-                                            if (!hasTriedFallback) {
-                                                hasTriedFallback = true
-                                                try {
-                                                    mp.reset()
-                                                    mp.setDisplay(holder)
-                                                    mp.setDataSource(
-                                                        ctx,
-                                                        Uri.parse("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4")
-                                                    )
-                                                    mp.prepareAsync()
-                                                    isBuffering = true
-                                                    return@setOnErrorListener true
-                                                } catch (e: Exception) {
-                                                    Log.e("VideoPlayer", "Fallback to sample URL failed: ${e.message}")
-                                                }
-                                            }
-                                            isBuffering = false
-                                            hasError = true
-                                            true
-                                        }
-
-                                        // Set data source safely
-                                        var dataSourceSet = false
-                                        val localFile = video.localFilePath?.let { File(it) }
-                                        if (localFile != null && localFile.exists() && localFile.length() > 50_000) {
-                                            try {
-                                                setDataSource(ctx, Uri.fromFile(localFile))
-                                                dataSourceSet = true
-                                            } catch (e: Exception) {
-                                                Log.w("VideoPlayer", "Could not set local file: ${e.message}")
-                                            }
-                                        }
-                                        if (!dataSourceSet) {
-                                            try {
-                                                val uri = Uri.parse("android.resource://${ctx.packageName}/${com.example.R.raw.sample_offline_video}")
-                                                setDataSource(ctx, uri)
-                                                dataSourceSet = true
-                                            } catch (e: Exception) {
-                                                Log.w("VideoPlayer", "Could not set raw sample URI: ${e.message}")
-                                            }
-                                        }
-                                        if (!dataSourceSet) {
-                                            try {
-                                                setDataSource(
-                                                    ctx,
-                                                    Uri.parse("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4")
-                                                )
-                                                dataSourceSet = true
-                                            } catch (e: Exception) {
-                                                Log.w("VideoPlayer", "Could not set remote sample: ${e.message}")
-                                            }
-                                        }
-                                        prepareAsync()
-                                    }
-                                    mediaPlayer = player
-                                } catch (e: Exception) {
-                                    Log.e("VideoPlayer", "Setup error: ${e.message}")
-                                    isBuffering = false
-                                    hasError = true
-                                    isPlayerPrepared = false
-                                }
+                                    old.reset()
+                                    old.release()
+                                } catch (e: Exception) {}
                             }
 
-                            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+                            try {
+                                val player = MediaPlayer().apply {
+                                    setDisplay(holder)
+                                    setOnPreparedListener { mp ->
+                                        isPlayerPrepared = true
+                                        isBuffering = false
+                                        val dur = mp.duration.toLong()
+                                        if (dur > 0) durationMs = dur
+                                        mp.start()
+                                        isPlaying = true
+                                    }
+                                    setOnCompletionListener {
+                                        isPlaying = false
+                                        currentPositionMs = durationMs
+                                    }
+                                    setOnErrorListener { _, _, _ ->
+                                        isBuffering = false
+                                        isPlaying = false
+                                        true
+                                    }
 
-                            override fun surfaceDestroyed(holder: SurfaceHolder) {
-                                surfaceHolder = null
-                                try {
-                                    mediaPlayer?.setDisplay(null)
-                                } catch (e: Exception) {
-                                    // Ignore
+                                    if (localFile != null && localFile.exists()) {
+                                        setDataSource(ctx, Uri.fromFile(localFile))
+                                    } else {
+                                        val uri = Uri.parse("android.resource://${ctx.packageName}/${com.example.R.raw.sample_offline_video}")
+                                        setDataSource(ctx, uri)
+                                    }
+                                    prepareAsync()
                                 }
+                                mediaPlayer = player
+                            } catch (e: Exception) {
+                                Log.e("LocalPlayer", "Setup error: ${e.message}")
+                                isBuffering = false
                             }
-                        })
-                    }
+                        }
+
+                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+                        override fun surfaceDestroyed(holder: SurfaceHolder) {
+                            surfaceHolder = null
+                            try {
+                                mediaPlayer?.setDisplay(null)
+                            } catch (e: Exception) {}
+                        }
+                    })
                 }
+            }
+        )
+
+        if (isBuffering) {
+            CircularProgressIndicator(
+                color = PureWhite,
+                modifier = Modifier
+                    .size(48.dp)
+                    .align(Alignment.Center)
             )
+        }
 
-            // Buffering Indicator
-            if (isBuffering && !hasError) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator(
-                        color = PureWhite,
-                        modifier = Modifier.size(54.dp)
-                    )
-                }
-            }
-
-            // Error notice
-            if (hasError) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier
-                            .background(DarkCard, RoundedCornerShape(16.dp))
-                            .padding(24.dp)
-                    ) {
-                        Text(
-                            text = "Офлайн предпросмотр видео",
-                            color = PureWhite,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "Локальный файл сохранен в памяти (${formatBytes(video.fileSizeBytes)})",
-                            color = TextSecondary,
-                            fontSize = 13.sp
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = {
-                                    try {
-                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(video.videoUrl))
-                                        context.startActivity(intent)
-                                    } catch (e: Exception) {
-                                        Log.w("VideoPlayer", "Open in browser failed: ${e.message}")
-                                    }
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = BlackBackground),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text("Открыть в YouTube", fontWeight = FontWeight.Bold)
-                            }
-                            OutlinedButton(
-                                onClick = onClose,
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text("Закрыть", color = PureWhite)
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Controls Overlay
-            AnimatedVisibility(
-                visible = isControlsVisible,
-                enter = fadeIn(),
-                exit = fadeOut(),
-                modifier = Modifier.fillMaxSize()
+        // Bottom Controls for local player
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter),
+            color = Color.Black.copy(alpha = 0.65f)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
             ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.55f))
+                // Slider
+                val progress = if (durationMs > 0) (currentPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f
+                Slider(
+                    value = progress,
+                    onValueChange = { newProg ->
+                        val targetMs = (newProg * durationMs).toLong()
+                        currentPositionMs = targetMs
+                        mediaPlayer?.seekTo(targetMs.toInt())
+                    },
+                    colors = SliderDefaults.colors(
+                        thumbColor = PureWhite,
+                        activeTrackColor = PureWhite,
+                        inactiveTrackColor = TextMuted
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Top Bar
+                    Text(
+                        text = "${formatTimeMs(currentPositionMs)} / ${formatTimeMs(durationMs)}",
+                        color = PureWhite,
+                        fontSize = 12.sp
+                    )
+
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 20.dp),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(
-                            onClick = onClose,
-                            modifier = Modifier
-                                .testTag("close_player_button")
-                                .size(48.dp)
-                                .background(DarkSurface, CircleShape)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Закрыть плеер",
-                                tint = PureWhite
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.width(12.dp))
-
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = video.title,
-                                color = PureWhite,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.OfflinePin,
-                                    contentDescription = null,
-                                    tint = GreenSuccess,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "Офлайн-режим • ${video.channelName}",
-                                    color = TextSecondary,
-                                    fontSize = 12.sp
-                                )
+                            onClick = {
+                                val newPos = (currentPositionMs - 10000).coerceAtLeast(0)
+                                mediaPlayer?.seekTo(newPos.toInt())
+                                currentPositionMs = newPos
                             }
-                        }
-
-                        // Mute button
-                        IconButton(
-                            onClick = {
-                                isMuted = !isMuted
-                                try {
-                                    mediaPlayer?.setVolume(
-                                        if (isMuted) 0f else 1f,
-                                        if (isMuted) 0f else 1f
-                                    )
-                                } catch (e: Exception) {
-                                    Log.w("VideoPlayer", "Volume set error: ${e.message}")
-                                }
-                            },
-                            modifier = Modifier
-                                .size(44.dp)
-                                .background(DarkSurface, CircleShape)
                         ) {
-                            Icon(
-                                imageVector = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
-                                contentDescription = "Звук",
-                                tint = PureWhite
-                            )
+                            Icon(Icons.Default.FastRewind, contentDescription = "-10s", tint = PureWhite)
                         }
-                    }
 
-                    // Center Play/Pause Controls
-                    Row(
-                        modifier = Modifier.align(Alignment.Center),
-                        horizontalArrangement = Arrangement.spacedBy(28.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        // Rewind -10s
                         IconButton(
                             onClick = {
-                                if (!isPlayerPrepared || hasError) return@IconButton
                                 mediaPlayer?.let { player ->
-                                    try {
-                                        val newPos = (player.currentPosition - 10000).coerceAtLeast(0)
-                                        player.seekTo(newPos)
-                                        currentPositionMs = newPos.toLong()
-                                    } catch (e: Exception) {
-                                        Log.w("VideoPlayer", "Rewind seek error: ${e.message}")
+                                    if (isPlaying) {
+                                        player.pause()
+                                        isPlaying = false
+                                    } else {
+                                        player.start()
+                                        isPlaying = true
                                     }
                                 }
                             },
                             modifier = Modifier
-                                .size(52.dp)
-                                .background(DarkSurface.copy(alpha = 0.85f), CircleShape)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.FastRewind,
-                                contentDescription = "Назад на 10 сек",
-                                tint = PureWhite,
-                                modifier = Modifier.size(28.dp)
-                            )
-                        }
-
-                        // Play / Pause White Button
-                        IconButton(
-                            onClick = {
-                                if (!isPlayerPrepared) {
-                                    playWhenReady = !playWhenReady
-                                    isPlaying = playWhenReady
-                                    return@IconButton
-                                }
-                                if (hasError) return@IconButton
-                                mediaPlayer?.let { player ->
-                                    try {
-                                        if (isPlaying) {
-                                            player.pause()
-                                            isPlaying = false
-                                            playWhenReady = false
-                                        } else {
-                                            player.start()
-                                            isPlaying = true
-                                            playWhenReady = true
-                                        }
-                                    } catch (e: Exception) {
-                                        Log.e("VideoPlayer", "Play/Pause error: ${e.message}")
-                                    }
-                                }
-                            },
-                            modifier = Modifier
-                                .testTag("play_pause_button")
-                                .size(72.dp)
+                                .size(48.dp)
                                 .background(PureWhite, CircleShape)
                         ) {
                             Icon(
                                 imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                contentDescription = if (isPlaying) "Пауза" else "Воспроизведение",
+                                contentDescription = if (isPlaying) "Пауза" else "Играть",
                                 tint = BlackBackground,
-                                modifier = Modifier.size(40.dp)
-                            )
-                        }
-
-                        // Forward +10s
-                        IconButton(
-                            onClick = {
-                                if (!isPlayerPrepared || hasError) return@IconButton
-                                mediaPlayer?.let { player ->
-                                    try {
-                                        val newPos = (player.currentPosition + 10000).coerceAtMost(player.duration)
-                                        player.seekTo(newPos)
-                                        currentPositionMs = newPos.toLong()
-                                    } catch (e: Exception) {
-                                        Log.w("VideoPlayer", "Forward seek error: ${e.message}")
-                                    }
-                                }
-                            },
-                            modifier = Modifier
-                                .size(52.dp)
-                                .background(DarkSurface.copy(alpha = 0.85f), CircleShape)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.FastForward,
-                                contentDescription = "Вперед на 10 сек",
-                                tint = PureWhite,
                                 modifier = Modifier.size(28.dp)
                             )
                         }
+
+                        IconButton(
+                            onClick = {
+                                val newPos = (currentPositionMs + 10000).coerceAtMost(durationMs)
+                                mediaPlayer?.seekTo(newPos.toInt())
+                                currentPositionMs = newPos
+                            }
+                        ) {
+                            Icon(Icons.Default.FastForward, contentDescription = "+10s", tint = PureWhite)
+                        }
                     }
 
-                    // Bottom Bar with Scrubber and Time
-                    Column(
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .fillMaxWidth()
-                            .padding(16.dp)
-                    ) {
-                        // Slider / Scrubber
-                        val sliderPos = if (durationMs > 0) {
-                            (currentPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-                        } else 0f
-
-                        Slider(
-                            value = sliderPos,
-                            enabled = isPlayerPrepared && !hasError && durationMs > 0,
-                            onValueChange = { frac ->
-                                if (isPlayerPrepared && !hasError) {
-                                    val target = (frac * durationMs).toLong()
-                                    currentPositionMs = target
-                                    try {
-                                        mediaPlayer?.seekTo(target.toInt())
-                                    } catch (e: Exception) {
-                                        Log.w("VideoPlayer", "Scrubber seek error: ${e.message}")
-                                    }
-                                }
-                            },
-                            colors = SliderDefaults.colors(
-                                thumbColor = PureWhite,
-                                activeTrackColor = PureWhite,
-                                inactiveTrackColor = DarkCard
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(20.dp)
-                        )
-
-                        Spacer(modifier = Modifier.height(4.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "${formatTime(currentPositionMs)} / ${formatTime(durationMs.coerceAtLeast(1000L))}",
-                                color = PureWhite,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-
-                            // Playback Speed Button (White badge)
-                            Surface(
-                                shape = RoundedCornerShape(16.dp),
-                                color = PureWhite,
-                                modifier = Modifier
-                                    .clickable {
-                                        playbackSpeed = when (playbackSpeed) {
-                                            1.0f -> 1.25f
-                                            1.25f -> 1.5f
-                                            1.5f -> 2.0f
-                                            2.0f -> 0.75f
-                                            else -> 1.0f
-                                        }
-                                        try {
-                                            mediaPlayer?.let { player ->
-                                                player.playbackParams = player.playbackParams.setSpeed(playbackSpeed)
-                                            }
-                                        } catch (e: Exception) {
-                                            Log.w("VideoPlayer", "Speed set error: ${e.message}")
-                                        }
-                                    }
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Speed,
-                                        contentDescription = null,
-                                        tint = BlackBackground,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = "${playbackSpeed}x",
-                                        color = BlackBackground,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            }
+                    IconButton(
+                        onClick = {
+                            isMuted = !isMuted
+                            mediaPlayer?.setVolume(if (isMuted) 0f else 1f, if (isMuted) 0f else 1f)
                         }
+                    ) {
+                        Icon(
+                            imageVector = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                            contentDescription = "Звук",
+                            tint = PureWhite
+                        )
                     }
                 }
             }
@@ -653,15 +613,21 @@ fun OfflineVideoPlayer(
     }
 }
 
-private fun formatTime(ms: Long): String {
+private fun formatTimeMs(ms: Long): String {
     val totalSeconds = (ms / 1000).coerceAtLeast(0)
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
-    return String.format("%02d:%02d", minutes, seconds)
+    return "%02d:%02d".format(minutes, seconds)
 }
 
 fun formatBytes(bytes: Long): String {
-    if (bytes <= 0) return "5.2 МБ"
-    val mb = bytes.toDouble() / (1024 * 1024)
-    return String.format("%.1f МБ", mb)
+    if (bytes <= 0) return "0 MB"
+    val kb = bytes / 1024.0
+    val mb = kb / 1024.0
+    val gb = mb / 1024.0
+    return when {
+        gb >= 1.0 -> "%.1f GB".format(gb)
+        mb >= 1.0 -> "%.1f MB".format(mb)
+        else -> "%.0f KB".format(kb)
+    }
 }

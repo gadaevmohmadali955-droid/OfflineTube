@@ -618,11 +618,9 @@ class YouTubeRepository(private val context: Context) {
             // Simulate / perform download with progress
             // Stream sample video or create offline media
             val sampleVideoUrls = listOf(
-                "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
-                "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-                "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/WeAreGoingOnBullrun.mp4"
+                "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"
             )
-            val streamUrl = sampleVideoUrls[Math.abs(video.id.hashCode()) % sampleVideoUrls.size]
+            val streamUrl = sampleVideoUrls[0]
 
             var downloadSuccess = false
             if (isNetworkAvailable()) {

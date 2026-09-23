@@ -24,6 +24,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        try {
+            val jsCache = java.io.File(cacheDir, "WebView/Default/HTTP Cache/Code Cache/js")
+            if (!jsCache.exists()) jsCache.mkdirs()
+            val wasmCache = java.io.File(cacheDir, "WebView/Default/HTTP Cache/Code Cache/wasm")
+            if (!wasmCache.exists()) wasmCache.mkdirs()
+        } catch (_: Exception) {}
         WindowCompat.getInsetsController(window, window.decorView).apply {
             isAppearanceLightStatusBars = false
             isAppearanceLightNavigationBars = false
