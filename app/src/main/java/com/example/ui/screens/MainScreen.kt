@@ -6,8 +6,11 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -107,13 +110,15 @@ fun MainScreen(
             NavigationBar(
                 containerColor = DarkSurface,
                 tonalElevation = 0.dp,
+                windowInsets = WindowInsets(0, 0, 0, 0),
                 modifier = Modifier
+                    .fillMaxWidth()
+                    .height(64.dp)
                     .border(
                         width = 1.dp,
                         color = DarkBorder,
                         shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
                     )
-                    .height(72.dp)
                     .testTag("bottom_navigation_bar")
             ) {
                 // Tab 1: Search / Add

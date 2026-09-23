@@ -8,6 +8,7 @@ import com.example.data.model.ConfigEntity
 import com.example.data.model.ConfigImportResult
 import com.example.data.model.ConfigPayload
 import com.example.data.model.VideoEntity
+import com.example.data.repository.SharedConfigRegistry
 import com.example.data.repository.YouTubeRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -285,11 +286,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _configErrorMessage = MutableStateFlow<String?>(null)
     val configErrorMessage: StateFlow<String?> = _configErrorMessage.asStateFlow()
 
+    private val _configErrorTitle = MutableStateFlow<String>("Ошибка конфига")
+    val configErrorTitle: StateFlow<String> = _configErrorTitle.asStateFlow()
+
     fun setConfigLinkInput(value: String) { _configLinkInput.value = value }
     fun showCreateConfigDialog() { _isCreateConfigDialogVisible.value = true }
     fun hideCreateConfigDialog() { _isCreateConfigDialogVisible.value = false }
     fun dismissConfigPreview() { _configImportPreview.value = null }
-    fun dismissConfigError() { _configErrorMessage.value = null }
+    fun dismissConfigError() {
+        _configErrorMessage.value = null
+        _configErrorTitle.value = "Ошибка конфига"
+    }
 
     fun createConfig(name: String, selectedVideos: List<VideoEntity>, selectedChannels: List<ChannelEntity>) {
         viewModelScope.launch {
@@ -308,19 +315,62 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun resolveAndPreviewConfig(rawLink: String) {
+        val trimmed = rawLink.trim()
+        if (trimmed.isBlank()) {
+            _configErrorTitle.value = "Пустая ссылка"
+            _configErrorMessage.value = "Пожалуйста, введите код или ссылку конфига (например, offline.xxxxxxxxxx)"
+            return
+        }
+
+        // Clean to pure code
+        val cleanCode = SharedConfigRegistry.extractCode(trimmed)
+
+        // Check if user already has this config locally
+        val existing = configs.value.find { cfg ->
+            cfg.code.equals(cleanCode, ignoreCase = true) ||
+            cfg.link.equals(trimmed, ignoreCase = true) ||
+            cfg.link.contains(cleanCode, ignoreCase = true)
+        }
+
+        if (existing != null) {
+            if (existing.isCreatedByMe) {
+                _configErrorTitle.value = "Вы создатель конфига"
+                _configErrorMessage.value = "Вы сами создали этот конфиг («${existing.name}»)! Он уже находится в вашем списке."
+            } else {
+                _configErrorTitle.value = "Конфиг уже добавлен"
+                _configErrorMessage.value = "Конфиг «${existing.name}» (offline.${existing.code}) уже добавлен в ваш список! Добавить его повторно нельзя."
+            }
+            return
+        }
+
         viewModelScope.launch {
-            val res = repository.resolveConfigCode(rawLink)
+            val res = repository.resolveConfigCode(trimmed)
             when (res) {
                 is ConfigImportResult.Success -> {
+                    // Double check by ID
+                    val alreadyHasId = configs.value.find { it.id == res.payload.id || it.code.equals(res.payload.code, ignoreCase = true) }
+                    if (alreadyHasId != null) {
+                        if (alreadyHasId.isCreatedByMe) {
+                            _configErrorTitle.value = "Вы создатель конфига"
+                            _configErrorMessage.value = "Вы сами создали этот конфиг («${alreadyHasId.name}»)! Он уже в вашем списке."
+                        } else {
+                            _configErrorTitle.value = "Конфиг уже добавлен"
+                            _configErrorMessage.value = "Конфиг «${alreadyHasId.name}» уже добавлен в ваш список!"
+                        }
+                        return@launch
+                    }
                     _configImportPreview.value = res.payload
                 }
                 is ConfigImportResult.DeletedByCreator -> {
+                    _configErrorTitle.value = "Конфиг аннулирован"
                     _configErrorMessage.value = res.message
                 }
                 is ConfigImportResult.NotFound -> {
+                    _configErrorTitle.value = "Конфиг не найден"
                     _configErrorMessage.value = res.message
                 }
                 is ConfigImportResult.Error -> {
+                    _configErrorTitle.value = "Ошибка ссылки"
                     _configErrorMessage.value = res.message
                 }
             }
@@ -328,6 +378,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun confirmImportConfig(payload: ConfigPayload) {
+        val existing = configs.value.find { it.id == payload.id || it.code.equals(payload.code, ignoreCase = true) }
+        if (existing != null) {
+            _configImportPreview.value = null
+            _configErrorTitle.value = "Конфиг уже добавлен"
+            _configErrorMessage.value = "Конфиг «${existing.name}» уже есть в вашем списке."
+            return
+        }
         viewModelScope.launch {
             repository.importAndSaveConfig(payload)
             _configImportPreview.value = null
@@ -336,10 +393,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun deleteConfig(configId: String) {
+    fun removeImportedConfig(configId: String) {
         viewModelScope.launch {
             repository.deleteConfig(configId)
-            _uiMessage.value = "Конфиг и связанные видео/каналы удалены"
+            _uiMessage.value = "Конфиг убран из вашего списка"
+        }
+    }
+
+    fun deleteConfigPermanently(configId: String) {
+        viewModelScope.launch {
+            repository.deleteConfig(configId)
+            _uiMessage.value = "Конфиг удален навсегда и аннулирован для всех"
         }
     }
 

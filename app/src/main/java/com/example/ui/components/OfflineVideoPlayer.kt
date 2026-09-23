@@ -1,10 +1,15 @@
 package com.example.ui.components
 
+import android.app.Activity
+import android.content.Intent
 import android.media.MediaPlayer
 import android.net.Uri
 import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -36,9 +41,12 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -126,6 +134,24 @@ fun OfflineVideoPlayer(
         }
     }
 
+    val activity = context as? Activity
+    DisposableEffect(Unit) {
+        val window = activity?.window
+        if (window != null) {
+            val controller = WindowCompat.getInsetsController(window, window.decorView)
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsetsCompat.Type.navigationBars())
+        }
+        onDispose {
+            val window = activity?.window
+            if (window != null) {
+                val controller = WindowCompat.getInsetsController(window, window.decorView)
+                controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                controller.hide(WindowInsetsCompat.Type.navigationBars())
+            }
+        }
+    }
+
     DisposableEffect(video.id) {
         onDispose {
             isPlayerPrepared = false
@@ -209,29 +235,23 @@ fun OfflineVideoPlayer(
                                                 try {
                                                     mp.reset()
                                                     mp.setDisplay(holder)
-                                                    val afd = ctx.resources.openRawResourceFd(com.example.R.raw.sample_offline_video)
-                                                    if (afd != null) {
-                                                        mp.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
-                                                        afd.close()
-                                                        mp.prepareAsync()
-                                                        isBuffering = true
-                                                        return@setOnErrorListener true
-                                                    }
+                                                    mp.setDataSource(
+                                                        ctx,
+                                                        Uri.parse("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4")
+                                                    )
+                                                    mp.prepareAsync()
+                                                    isBuffering = true
+                                                    return@setOnErrorListener true
                                                 } catch (e: Exception) {
-                                                    Log.e("VideoPlayer", "Fallback failed: ${e.message}")
+                                                    Log.e("VideoPlayer", "Fallback to sample URL failed: ${e.message}")
                                                 }
                                             }
                                             isBuffering = false
                                             hasError = true
-                                            try {
-                                                mp.reset()
-                                            } catch (e: Exception) {
-                                                // Ignore
-                                            }
                                             true
                                         }
 
-                                        // Set data source
+                                        // Set data source safely
                                         var dataSourceSet = false
                                         val localFile = video.localFilePath?.let { File(it) }
                                         if (localFile != null && localFile.exists() && localFile.length() > 50_000) {
@@ -244,21 +264,23 @@ fun OfflineVideoPlayer(
                                         }
                                         if (!dataSourceSet) {
                                             try {
-                                                val afd = ctx.resources.openRawResourceFd(com.example.R.raw.sample_offline_video)
-                                                if (afd != null) {
-                                                    setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
-                                                    afd.close()
-                                                    dataSourceSet = true
-                                                }
+                                                val uri = Uri.parse("android.resource://${ctx.packageName}/${com.example.R.raw.sample_offline_video}")
+                                                setDataSource(ctx, uri)
+                                                dataSourceSet = true
                                             } catch (e: Exception) {
-                                                Log.w("VideoPlayer", "Could not set raw sample: ${e.message}")
+                                                Log.w("VideoPlayer", "Could not set raw sample URI: ${e.message}")
                                             }
                                         }
                                         if (!dataSourceSet) {
-                                            setDataSource(
-                                                ctx,
-                                                Uri.parse("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4")
-                                            )
+                                            try {
+                                                setDataSource(
+                                                    ctx,
+                                                    Uri.parse("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4")
+                                                )
+                                                dataSourceSet = true
+                                            } catch (e: Exception) {
+                                                Log.w("VideoPlayer", "Could not set remote sample: ${e.message}")
+                                            }
                                         }
                                         prepareAsync()
                                     }
@@ -287,7 +309,7 @@ fun OfflineVideoPlayer(
             )
 
             // Buffering Indicator
-            if (isBuffering) {
+            if (isBuffering && !hasError) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
@@ -308,8 +330,8 @@ fun OfflineVideoPlayer(
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
-                            .background(DarkCard, RoundedCornerShape(12.dp))
-                            .padding(20.dp)
+                            .background(DarkCard, RoundedCornerShape(16.dp))
+                            .padding(24.dp)
                     ) {
                         Text(
                             text = "Офлайн предпросмотр видео",
@@ -319,10 +341,33 @@ fun OfflineVideoPlayer(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "Локальный файл сохранен в хранилище приложения (${formatBytes(video.fileSizeBytes)})",
+                            text = "Локальный файл сохранен в памяти (${formatBytes(video.fileSizeBytes)})",
                             color = TextSecondary,
                             fontSize = 13.sp
                         )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    try {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(video.videoUrl))
+                                        context.startActivity(intent)
+                                    } catch (e: Exception) {
+                                        Log.w("VideoPlayer", "Open in browser failed: ${e.message}")
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = BlackBackground),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("Открыть в YouTube", fontWeight = FontWeight.Bold)
+                            }
+                            OutlinedButton(
+                                onClick = onClose,
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("Закрыть", color = PureWhite)
+                            }
+                        }
                     }
                 }
             }

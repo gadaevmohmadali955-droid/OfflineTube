@@ -101,6 +101,10 @@ fun ConfigsScreen(
     val isCreateDialogVisible by viewModel.isCreateConfigDialogVisible.collectAsState()
     val importPreview by viewModel.configImportPreview.collectAsState()
     val configError by viewModel.configErrorMessage.collectAsState()
+    val configErrorTitle by viewModel.configErrorTitle.collectAsState()
+
+    var configToDeletePermanently by remember { mutableStateOf<ConfigEntity?>(null) }
+    var configToRemove by remember { mutableStateOf<ConfigEntity?>(null) }
 
     val offlineVideos by viewModel.offlineVideos.collectAsState()
     val savedChannels by viewModel.savedChannels.collectAsState()
@@ -316,11 +320,105 @@ fun ConfigsScreen(
                         context.startActivity(Intent.createChooser(shareIntent, "Поделиться конфигом через"))
                     },
                     onDelete = {
-                        viewModel.deleteConfig(config.id)
+                        if (config.isCreatedByMe) {
+                            configToDeletePermanently = config
+                        } else {
+                            configToRemove = config
+                        }
                     }
                 )
             }
         }
+    }
+
+    // Modal Dialog: Delete permanently by creator confirmation
+    configToDeletePermanently?.let { config ->
+        AlertDialog(
+            onDismissRequest = { configToDeletePermanently = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(imageVector = Icons.Default.Delete, contentDescription = null, tint = YouTubeRed)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Удалить конфиг навсегда?", color = PureWhite, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                }
+            },
+            text = {
+                Text(
+                    text = "Вы являетесь создателем конфига «${config.name}».\n\nПри удалении он будет полностью аннулирован, перестанет открываться по ссылке ${config.link} для всех пользователей и удалится с вашего устройства. Вы уверены?",
+                    color = OffWhite,
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deleteConfigPermanently(config.id)
+                        configToDeletePermanently = null
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = YouTubeRed,
+                        contentColor = PureWhite
+                    ),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Удалить навсегда", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { configToDeletePermanently = null }
+                ) {
+                    Text("Отмена", color = TextSecondary)
+                }
+            },
+            containerColor = DarkCard,
+            shape = RoundedCornerShape(16.dp)
+        )
+    }
+
+    // Modal Dialog: Remove imported config from my list confirmation
+    configToRemove?.let { config ->
+        AlertDialog(
+            onDismissRequest = { configToRemove = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(imageVector = Icons.Default.Delete, contentDescription = null, tint = TextSecondary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Убрать из списка?", color = PureWhite, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                }
+            },
+            text = {
+                Text(
+                    text = "Конфиг «${config.name}» (${config.link}) будет убран из вашего списка. Он не будет удален у других пользователей.",
+                    color = OffWhite,
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.removeImportedConfig(config.id)
+                        configToRemove = null
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = PureWhite,
+                        contentColor = BlackBackground
+                    ),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Убрать", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { configToRemove = null }
+                ) {
+                    Text("Отмена", color = TextSecondary)
+                }
+            },
+            containerColor = DarkCard,
+            shape = RoundedCornerShape(16.dp)
+        )
     }
 
     // Modal Dialog: Create Config
@@ -344,7 +442,7 @@ fun ConfigsScreen(
         )
     }
 
-    // Error Alert Dialog (Deleted by creator / not found)
+    // Error Alert Dialog (Deleted by creator / already added / not found)
     configError?.let { errorMsg ->
         AlertDialog(
             onDismissRequest = { viewModel.dismissConfigError() },
@@ -352,7 +450,7 @@ fun ConfigsScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(imageVector = Icons.Default.ErrorOutline, contentDescription = null, tint = YouTubeRed)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Конфиг недоступен", color = PureWhite, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Text(configErrorTitle, color = PureWhite, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                 }
             },
             text = {
@@ -433,8 +531,8 @@ private fun ConfigItemCard(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Delete,
-                        contentDescription = "Удалить конфиг",
-                        tint = TextSecondary,
+                        contentDescription = if (config.isCreatedByMe) "Удалить конфиг навсегда" else "Убрать из списка",
+                        tint = if (config.isCreatedByMe) YouTubeRed else TextSecondary,
                         modifier = Modifier.size(18.dp)
                     )
                 }
