@@ -299,7 +299,8 @@ fun MainScreen(
             activeVideo?.let { video ->
                 OfflineVideoPlayer(
                     video = video,
-                    onClose = { viewModel.closePlayer() }
+                    onClose = { viewModel.closePlayer() },
+                    onDownload = { v -> viewModel.downloadVideoForOffline(v) }
                 )
             }
 

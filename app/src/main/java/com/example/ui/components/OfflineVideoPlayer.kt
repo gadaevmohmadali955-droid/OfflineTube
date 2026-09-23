@@ -1,8 +1,11 @@
 package com.example.ui.components
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.media.MediaPlayer
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.util.Log
 import android.view.SurfaceHolder
@@ -20,7 +23,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,19 +41,19 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
+import androidx.compose.material.icons.filled.FileDownloadDone
 import androidx.compose.material.icons.filled.OfflinePin
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SmartDisplay
-import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
@@ -77,6 +79,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -99,28 +102,44 @@ enum class VideoPlayerSource {
     OFFLINE_LOCAL
 }
 
+fun isDeviceOnline(context: Context): Boolean {
+    val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+    val net = cm.activeNetwork ?: return false
+    val caps = cm.getNetworkCapabilities(net) ?: return false
+    return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+}
+
 @Composable
 fun OfflineVideoPlayer(
     video: VideoEntity,
     onClose: () -> Unit,
+    onDownload: ((VideoEntity) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
 
-    // Check if real local file is available
-    val localFile = remember(video.localFilePath) {
-        video.localFilePath?.let { File(it) }?.takeIf { it.exists() && it.length() > 50_000 }
+    // Check if network is connected
+    val online = remember { isDeviceOnline(context) }
+
+    // Check if real local file is available on device
+    val localFile = remember(video.localFilePath, video.isDownloaded) {
+        val targetPath = video.localFilePath ?: File(context.filesDir, "offline_videos/${video.id}.mp4").absolutePath
+        File(targetPath).takeIf { it.exists() && it.length() > 50_000 }
     }
 
-    // Default to YouTube online player so user sees real content, or local if downloaded
+    // Default to OFFLINE_LOCAL if no internet, or YOUTUBE_ONLINE if online
     var currentSource by remember {
-        mutableStateOf(VideoPlayerSource.YOUTUBE_ONLINE)
+        mutableStateOf(
+            if (!online && localFile != null) VideoPlayerSource.OFFLINE_LOCAL
+            else if (localFile != null && video.isDownloaded) VideoPlayerSource.OFFLINE_LOCAL
+            else VideoPlayerSource.YOUTUBE_ONLINE
+        )
     }
 
-    var isControlsVisible by remember { mutableStateOf(true) }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var isWebLoading by remember { mutableStateOf(true) }
+    var isDownloadStarted by remember { mutableStateOf(false) }
 
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
@@ -141,8 +160,7 @@ fun OfflineVideoPlayer(
         }
     }
 
-    // Configure transient swipe navigation bar so bottom phone buttons don't block video
-    // and swiping up restores them
+    // Hide phone bottom buttons (transient swipe up restores them)
     DisposableEffect(Unit) {
         val window = activity?.window
         if (window != null) {
@@ -162,9 +180,7 @@ fun OfflineVideoPlayer(
 
     Dialog(
         onDismissRequest = onClose,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false
-        )
+        properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Box(
             modifier = modifier
@@ -173,78 +189,186 @@ fun OfflineVideoPlayer(
         ) {
             when (currentSource) {
                 VideoPlayerSource.YOUTUBE_ONLINE -> {
-                    // REAL YouTube Player (Videos and Shorts)
-                    AndroidView(
-                        modifier = Modifier.fillMaxSize(),
-                        factory = { ctx ->
-                            try {
-                                val jsCache = File(ctx.cacheDir, "WebView/Default/HTTP Cache/Code Cache/js")
-                                if (!jsCache.exists()) jsCache.mkdirs()
-                                val wasmCache = File(ctx.cacheDir, "WebView/Default/HTTP Cache/Code Cache/wasm")
-                                if (!wasmCache.exists()) wasmCache.mkdirs()
-                            } catch (_: Exception) {}
-
-                            WebView(ctx).apply {
-                                layoutParams = ViewGroup.LayoutParams(
-                                    ViewGroup.LayoutParams.MATCH_PARENT,
-                                    ViewGroup.LayoutParams.MATCH_PARENT
+                    if (!online && localFile == null) {
+                        // Offline notice
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.WifiOff,
+                                    contentDescription = null,
+                                    tint = PureWhite,
+                                    modifier = Modifier.size(64.dp)
                                 )
-                                setBackgroundColor(android.graphics.Color.BLACK)
-                                setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
-                                settings.apply {
-                                    javaScriptEnabled = true
-                                    domStorageEnabled = true
-                                    mediaPlaybackRequiresUserGesture = false
-                                    loadWithOverviewMode = true
-                                    useWideViewPort = true
-                                    allowContentAccess = true
-                                    allowFileAccess = false
-                                    cacheMode = WebSettings.LOAD_DEFAULT
-                                    userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text(
+                                    text = "Нет подключения к интернету",
+                                    color = PureWhite,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 18.sp
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "Чтобы смотреть видео без интернета, скачайте его заранее в приложении при наличии сети.",
+                                    color = TextSecondary,
+                                    fontSize = 14.sp,
+                                    textAlign = TextAlign.Center
+                                )
+                                Spacer(modifier = Modifier.height(20.dp))
+                                Button(
+                                    onClick = onClose,
+                                    colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = BlackBackground)
+                                ) {
+                                    Text("Понятно", fontWeight = FontWeight.Bold)
                                 }
-                                webChromeClient = object : WebChromeClient() {
-                                    override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                                        if (newProgress >= 70) {
+                            }
+                        }
+                    } else {
+                        // Embedded YouTube Player with exact origin & referer policy to prevent Error 153
+                        AndroidView(
+                            modifier = Modifier.fillMaxSize(),
+                            factory = { ctx ->
+                                try {
+                                    val jsCache = File(ctx.cacheDir, "WebView/Default/HTTP Cache/Code Cache/js")
+                                    if (!jsCache.exists()) jsCache.mkdirs()
+                                    val wasmCache = File(ctx.cacheDir, "WebView/Default/HTTP Cache/Code Cache/wasm")
+                                    if (!wasmCache.exists()) wasmCache.mkdirs()
+                                } catch (_: Exception) {}
+
+                                WebView(ctx).apply {
+                                    layoutParams = ViewGroup.LayoutParams(
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                        ViewGroup.LayoutParams.MATCH_PARENT
+                                    )
+                                    setBackgroundColor(android.graphics.Color.BLACK)
+                                    setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
+
+                                    settings.apply {
+                                        javaScriptEnabled = true
+                                        domStorageEnabled = true
+                                        mediaPlaybackRequiresUserGesture = false
+                                        loadWithOverviewMode = true
+                                        useWideViewPort = true
+                                        allowContentAccess = true
+                                        allowFileAccess = false
+                                        cacheMode = WebSettings.LOAD_DEFAULT
+                                        mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                                        userAgentString = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36"
+                                    }
+
+                                    webChromeClient = object : WebChromeClient() {
+                                        override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                                            if (newProgress >= 70) {
+                                                isWebLoading = false
+                                            }
+                                        }
+                                    }
+
+                                    webViewClient = object : WebViewClient() {
+                                        override fun shouldOverrideUrlLoading(view: WebView?, request: android.webkit.WebResourceRequest?): Boolean {
+                                            val url = request?.url?.toString() ?: ""
+                                            if (url.startsWith("intent:") || url.startsWith("vnd.youtube:")) {
+                                                try {
+                                                    val intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
+                                                    ctx.startActivity(intent)
+                                                    return true
+                                                } catch (_: Exception) {
+                                                    return true
+                                                }
+                                            }
+                                            return false
+                                        }
+
+                                        override fun onPageFinished(view: WebView?, url: String?) {
                                             isWebLoading = false
                                         }
                                     }
-                                }
-                                webViewClient = object : WebViewClient() {
-                                    override fun onPageFinished(view: WebView?, url: String?) {
-                                        isWebLoading = false
-                                    }
-                                }
 
-                                val embedUrl = if (video.isShort) {
-                                    "https://www.youtube.com/embed/${video.id}?autoplay=1&playsinline=1&controls=1&rel=0&loop=1&playlist=${video.id}"
-                                } else {
-                                    "https://www.youtube.com/embed/${video.id}?autoplay=1&playsinline=1&controls=1&rel=0"
-                                }
+                                    // HTML structure with referrerpolicy="strict-origin-when-cross-origin"
+                                    // and origin=https://www.youtube.com which resolves YouTube Error 153
+                                    val embedSrc = "https://www.youtube-nocookie.com/embed/${video.id}?autoplay=1&playsinline=1&controls=1&enablejsapi=1&origin=https://www.youtube.com&rel=0&modestbranding=1"
 
-                                loadUrl(embedUrl)
-                                webViewRef = this
+                                    val html = """
+                                        <!DOCTYPE html>
+                                        <html>
+                                        <head>
+                                            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+                                            <style>
+                                                * { margin: 0; padding: 0; box-sizing: border-box; }
+                                                html, body {
+                                                    width: 100%;
+                                                    height: 100%;
+                                                    background-color: #000000;
+                                                    overflow: hidden;
+                                                }
+                                                .player-container {
+                                                    position: absolute;
+                                                    top: 0;
+                                                    left: 0;
+                                                    width: 100%;
+                                                    height: 100%;
+                                                    display: flex;
+                                                    align-items: center;
+                                                    justify-content: center;
+                                                }
+                                                iframe {
+                                                    width: 100%;
+                                                    height: 100%;
+                                                    border: 0;
+                                                }
+                                            </style>
+                                        </head>
+                                        <body>
+                                            <div class="player-container">
+                                                <iframe 
+                                                    id="ytplayer"
+                                                    type="text/html"
+                                                    src="$embedSrc"
+                                                    referrerpolicy="strict-origin-when-cross-origin"
+                                                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                                                    allowfullscreen>
+                                                </iframe>
+                                            </div>
+                                        </body>
+                                        </html>
+                                    """.trimIndent()
+
+                                    loadDataWithBaseURL(
+                                        "https://www.youtube.com",
+                                        html,
+                                        "text/html",
+                                        "UTF-8",
+                                        "https://www.youtube.com"
+                                    )
+                                    webViewRef = this
+                                }
+                            },
+                            update = {}
+                        )
+
+                        if (isWebLoading) {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(
+                                    color = PureWhite,
+                                    modifier = Modifier.size(48.dp)
+                                )
                             }
-                        },
-                        update = {
-                            // Ready
-                        }
-                    )
-
-                    if (isWebLoading) {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CircularProgressIndicator(
-                                color = PureWhite,
-                                modifier = Modifier.size(50.dp)
-                            )
                         }
                     }
                 }
 
                 VideoPlayerSource.OFFLINE_LOCAL -> {
-                    // Local MP4 Player using MediaPlayer
+                    // Local MP4 Player (completely offline without internet)
                     LocalOfflinePlayerView(
                         video = video,
                         localFile = localFile
@@ -252,12 +376,12 @@ fun OfflineVideoPlayer(
                 }
             }
 
-            // Top Bar Overlay
+            // Top Header Bar
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.TopCenter),
-                color = Color.Black.copy(alpha = 0.75f)
+                color = Color.Black.copy(alpha = 0.82f)
             ) {
                 Row(
                     modifier = Modifier
@@ -297,15 +421,15 @@ fun OfflineVideoPlayer(
                         )
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
-                                imageVector = if (currentSource == VideoPlayerSource.YOUTUBE_ONLINE) Icons.Default.SmartDisplay else Icons.Default.OfflinePin,
+                                imageVector = if (currentSource == VideoPlayerSource.OFFLINE_LOCAL) Icons.Default.OfflinePin else Icons.Default.SmartDisplay,
                                 contentDescription = null,
-                                tint = if (currentSource == VideoPlayerSource.YOUTUBE_ONLINE) PureWhite else GreenSuccess,
+                                tint = if (currentSource == VideoPlayerSource.OFFLINE_LOCAL) GreenSuccess else PureWhite,
                                 modifier = Modifier.size(13.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = if (currentSource == VideoPlayerSource.YOUTUBE_ONLINE) "YouTube • ${video.channelName}" else "Офлайн-файл • ${video.channelName}",
-                                color = TextSecondary,
+                                text = if (currentSource == VideoPlayerSource.OFFLINE_LOCAL) "Офлайн (без интернета) • ${video.channelName}" else "YouTube Онлайн • ${video.channelName}",
+                                color = if (currentSource == VideoPlayerSource.OFFLINE_LOCAL) GreenSuccess else TextSecondary,
                                 fontSize = 11.sp,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -313,7 +437,7 @@ fun OfflineVideoPlayer(
                         }
                     }
 
-                    // Open in YouTube app button
+                    // Open in YouTube app button (always available fallback)
                     IconButton(
                         onClick = {
                             try {
@@ -336,28 +460,28 @@ fun OfflineVideoPlayer(
                         )
                     }
 
-                    // Reload button (in case connection was slow)
-                    if (currentSource == VideoPlayerSource.YOUTUBE_ONLINE) {
+                    // Download for offline button (if not downloaded)
+                    if (localFile == null && onDownload != null) {
                         Spacer(modifier = Modifier.width(6.dp))
                         IconButton(
                             onClick = {
-                                isWebLoading = true
-                                webViewRef?.reload()
+                                isDownloadStarted = true
+                                onDownload(video)
                             },
                             modifier = Modifier
                                 .size(42.dp)
-                                .background(DarkSurface, CircleShape)
+                                .background(if (isDownloadStarted) GreenSuccess.copy(alpha = 0.2f) else DarkSurface, CircleShape)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Refresh,
-                                contentDescription = "Обновить",
-                                tint = PureWhite,
+                                imageVector = if (isDownloadStarted) Icons.Default.FileDownloadDone else Icons.Default.Download,
+                                contentDescription = "Скачать для офлайн",
+                                tint = if (isDownloadStarted) GreenSuccess else PureWhite,
                                 modifier = Modifier.size(20.dp)
                             )
                         }
                     }
 
-                    // Switch to Offline Local if downloaded
+                    // Toggle between Online & Offline if local file is ready
                     if (localFile != null) {
                         Spacer(modifier = Modifier.width(6.dp))
                         IconButton(
@@ -370,14 +494,71 @@ fun OfflineVideoPlayer(
                             },
                             modifier = Modifier
                                 .size(42.dp)
-                                .background(DarkSurface, CircleShape)
+                                .background(if (currentSource == VideoPlayerSource.OFFLINE_LOCAL) GreenSuccess.copy(alpha = 0.25f) else DarkSurface, CircleShape)
                         ) {
                             Icon(
-                                imageVector = if (currentSource == VideoPlayerSource.YOUTUBE_ONLINE) Icons.Default.OfflinePin else Icons.Default.SmartDisplay,
+                                imageVector = if (currentSource == VideoPlayerSource.OFFLINE_LOCAL) Icons.Default.OfflinePin else Icons.Default.SmartDisplay,
                                 contentDescription = "Переключить источник",
                                 tint = if (currentSource == VideoPlayerSource.OFFLINE_LOCAL) GreenSuccess else PureWhite,
                                 modifier = Modifier.size(20.dp)
                             )
+                        }
+                    }
+                }
+            }
+
+            // Bottom Offline Helper Strip
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter),
+                color = Color.Black.copy(alpha = 0.85f)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = if (currentSource == VideoPlayerSource.OFFLINE_LOCAL) Icons.Default.OfflinePin else Icons.Default.Download,
+                            contentDescription = null,
+                            tint = if (currentSource == VideoPlayerSource.OFFLINE_LOCAL) GreenSuccess else TextMuted,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (currentSource == VideoPlayerSource.OFFLINE_LOCAL) {
+                                "Офлайн-режим: воспроизведение из памяти (без интернета)"
+                            } else if (localFile != null) {
+                                "Файл сохранен! Нажмите значок галочки сверху для режима без интернета"
+                            } else {
+                                "Для просмотра без интернета нажмите кнопку скачивания со стрелкой"
+                            },
+                            color = PureWhite,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    if (localFile == null && onDownload != null && !isDownloadStarted) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                isDownloadStarted = true
+                                onDownload(video)
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = PureWhite)
+                        ) {
+                            Text("Скачать", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -391,7 +572,6 @@ private fun LocalOfflinePlayerView(
     video: VideoEntity,
     localFile: File?
 ) {
-    val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(false) }
     var isPlayerPrepared by remember { mutableStateOf(false) }
     var currentPositionMs by remember { mutableLongStateOf(0L) }
@@ -410,9 +590,7 @@ private fun LocalOfflinePlayerView(
                         val dur = player.duration.toLong()
                         if (dur > 0) durationMs = dur
                     }
-                } catch (e: Exception) {
-                    // Ignore
-                }
+                } catch (_: Exception) {}
             }
             delay(500)
         }
@@ -426,9 +604,7 @@ private fun LocalOfflinePlayerView(
                 try {
                     reset()
                     release()
-                } catch (e: Exception) {
-                    // Ignore
-                }
+                } catch (_: Exception) {}
             }
             mediaPlayer = null
         }
@@ -446,7 +622,7 @@ private fun LocalOfflinePlayerView(
                                 try {
                                     old.reset()
                                     old.release()
-                                } catch (e: Exception) {}
+                                } catch (_: Exception) {}
                             }
 
                             try {
@@ -490,7 +666,7 @@ private fun LocalOfflinePlayerView(
                             surfaceHolder = null
                             try {
                                 mediaPlayer?.setDisplay(null)
-                            } catch (e: Exception) {}
+                            } catch (_: Exception) {}
                         }
                     })
                 }
@@ -510,13 +686,14 @@ private fun LocalOfflinePlayerView(
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .align(Alignment.BottomCenter),
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 36.dp),
             color = Color.Black.copy(alpha = 0.65f)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
                 // Slider
                 val progress = if (durationMs > 0) (currentPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f
