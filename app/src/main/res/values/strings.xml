@@ -1,0 +1,19 @@
+<resources>
+    <string name="app_name">TubeSync</string>
+    <string name="tab_search">Поиск / Добавить</string>
+    <string name="tab_offline">Офлайн видео</string>
+    <string name="tab_channels">Каналы</string>
+    <string name="tab_configs">Конфиги</string>
+    <string name="category_video">Видео</string>
+    <string name="category_channel">Канал</string>
+    <string name="input_video_hint">Вставьте ссылку на видео или Shorts YouTube…</string>
+    <string name="input_channel_hint">Вставьте ссылку на канал или @хэндл…</string>
+    <string name="btn_search">Найти</string>
+    <string name="btn_save_offline">Скачать офлайн</string>
+    <string name="btn_watch">Смотреть</string>
+    <string name="btn_delete">Удалить</string>
+    <string name="btn_sync">Синхронизировать</string>
+    <string name="filter_all">Все</string>
+    <string name="filter_videos">Видео</string>
+    <string name="filter_shorts">Shorts</string>
+</resources>

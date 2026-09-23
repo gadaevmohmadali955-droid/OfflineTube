@@ -1,0 +1,6 @@
+{
+  "name": "TubeSync",
+  "description": "Офлайн-плеер и синхронизатор каналов и видео YouTube с просмотром без интернета",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
