@@ -30,6 +30,17 @@ jobs:
       - name: Выдача прав на выполнение gradlew
         run: chmod +x gradlew
 
+      - name: Восстановление debug.keystore для подписи
+        run: |
+          if [ -f "debug.keystore.base64" ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+            echo "debug.keystore успешно восстановлен из base64"
+          elif [ ! -f "debug.keystore" ]; then
+            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            echo "debug.keystore сгенерирован заново"
+          fi
+          ls -la debug.keystore
+
       - name: Сборка Debug APK через Gradle
         run: ./gradlew assembleDebug --stacktrace
 
